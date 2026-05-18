@@ -8,6 +8,7 @@ import java.lang.String as String
 from java.lang import Short
 
 import thread
+import random
 
 queryPayloadsFile = open('query payloads.txt', "r")
 queryPayloadsFromFile = queryPayloadsFile.readlines()
@@ -89,11 +90,15 @@ class uiTab(JFrame):
 
 		queryTableData = []
 		for queryPayload in queryPayloadsFromFile:
-			queryTableData.append([queryPayload])
+			stripped = queryPayload.strip()
+			if stripped and not stripped.startswith('#'):
+				queryTableData.append([queryPayload])
 
 		headerTableData = []
 		for headerPayload in headerPayloadsFromFile:
-			headerTableData.append([headerPayload])
+			stripped = headerPayload.strip()
+			if stripped and not stripped.startswith('#'):
+				headerTableData.append([headerPayload])
 
 		queryTableColumns = [None]
 		queryTableModel = table.DefaultTableModel(queryTableData,queryTableColumns)
@@ -250,6 +255,29 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 
 		return payloads
 
+	def applyUserAgent(self, headers):
+		user_agents = [
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36",
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
+			"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, Gecko) Version/17.0 Safari/605.1.15",
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+			"Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+			"Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, Gecko) Version/17.1 Mobile/15E148 Safari/604.1",
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/119.0.0.0 Safari/537.36",
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
+		]
+		ua = random.choice(user_agents)
+		new_headers = list(headers)
+		
+		# Burp headers list: first element is the request line
+		for i in range(1, len(new_headers)):
+			if new_headers[i].lower().startswith("user-agent:"):
+				new_headers[i] = "User-Agent: " + ua
+				return new_headers
+		
+		new_headers.append("User-Agent: " + ua)
+		return new_headers
+
 	def tryBypassWithQueryPayload(self, request, payload, httpService):
 		results = []
 		#each result element is an array of [detail,httpMessage]
@@ -257,11 +285,23 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 		requestPath = request.getUrl().getPath()
 		payloads = self.generatePayloads(requestPath, payload)
 
+		requestInfo = self.helpers.analyzeRequest(request)
+		originalHeaders = requestInfo.getHeaders()
+		requestBody = request.getRequest()[requestInfo.getBodyOffset():]
 
-		originalRequest = self.helpers.bytesToString(request.getRequest())
 		for pathToTest in payloads:
 			try:
-				newRequest = originalRequest.replace(requestPath, pathToTest)
+				newHeaders = self.applyUserAgent(originalHeaders)
+				# Update request line with new path
+				parts = list(newHeaders[0].split(" "))
+				parts[1] = pathToTest
+				newHeaders[0] = " ".join(parts)
+
+				headersAsJavaSublist = ArrayList()
+				for header in newHeaders:
+					headersAsJavaSublist.add(String(header))
+
+				newRequest = self.helpers.buildHttpMessage(headersAsJavaSublist, requestBody)
 				newRequestResult = self.callbacks.makeHttpRequest(httpService, newRequest)
 				newRequestStatusCode = str(self.helpers.analyzeResponse(newRequestResult.getResponse()).getStatusCode())
 			except:
@@ -299,22 +339,37 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 		results = []
 		#each result element is an array of [detail,httpMessage]
 
-		headerAlreadyAdded = False
 		requestInfo = self.helpers.analyzeRequest(baseRequestResponse)
-		headers = requestInfo.getHeaders()
-		for index, header in enumerate(headers):
-			if header.split(" ")[0].lower() == payload.split(" ")[0].lower(): #if header already exist
-				headers[index] = payload
+		requestPath = str(baseRequestResponse.getUrl().getPath())
+
+		# Replace {path} placeholder with actual request path (used by X-Original-URL, X-Rewrite-URL etc.)
+		resolvedPayload = payload.replace("{path}", requestPath)
+
+		# For X-Rewrite-URL / X-rewrite-url style headers, send the request to the base path "/"
+		# so the server rewrite logic applies to the root, matching bash: curl $1 -H "X-rewrite-url: $2"
+		headersRaw = requestInfo.getHeaders()
+		newHeaders = list(headersRaw)
+		payloadHeaderName = resolvedPayload.split(":")[0].lower()
+		if payloadHeaderName in ("x-rewrite-url", "x-original-url"):
+			# rewrite the request line path to "/"
+			newHeaders[0] = newHeaders[0].split(" ")[0] + " / " + newHeaders[0].split(" ")[2]
+
+		headerAlreadyAdded = False
+		for index, header in enumerate(newHeaders):
+			if header.split(" ")[0].lower() == resolvedPayload.split(" ")[0].lower():
+				newHeaders[index] = resolvedPayload
 				headerAlreadyAdded = True
 
-		if headerAlreadyAdded == False:
-			headers.append(payload)
+		if not headerAlreadyAdded:
+			newHeaders.append(resolvedPayload)
+
+		# Apply User-Agent
+		newHeaders = self.applyUserAgent(newHeaders)
 
 		requestBody = baseRequestResponse.getRequest()[requestInfo.getBodyOffset():]
-		
 
 		headersAsJavaSublist = ArrayList()
-		for header in headers:
+		for header in newHeaders:
 			headersAsJavaSublist.add(String(header))
 
 		newRequest = self.helpers.buildHttpMessage(headersAsJavaSublist, requestBody)
@@ -328,12 +383,11 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 			for header in responseHeaders:
 				if "Content-Length: " in header:
 					resultContentLength = header[17:]
-					if resultContentLength[-1] == ']': # happens if CL header is the last header in response
+					if resultContentLength[-1] == ']':
 						resultContentLength = resultContentLength.rstrip(']')
 
 			issue = []
-
-			issue.append("<tr><td>" + str(requestNum) + "</td><td>" + originalRequestUrl + "</td><td>" + payload + "</td> <td>" + newRequestStatusCode + "</td> <td>" + resultContentLength + "</td></tr>")
+			issue.append("<tr><td>" + str(requestNum) + "</td><td>" + originalRequestUrl + "</td><td>" + resolvedPayload + "</td> <td>" + newRequestStatusCode + "</td> <td>" + resultContentLength + "</td></tr>")
 			issue.append(newRequestResult)
 			results.append(issue)
 
@@ -348,6 +402,9 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 		headers = requestInfo.getHeaders()
 		headers[0] = headers[0].replace("GET", "POST")
 		headers.append("Content-Length: 0")
+
+		# Apply User-Agent
+		headers = self.applyUserAgent(headers)
 
 		headersAsJavaSublist = ArrayList()
 		for header in headers:
@@ -415,6 +472,131 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 			return None
 
 
+	def tryBypassWithExactPaths(self, baseRequestResponse, httpService):
+		"""
+		Tests the exact URL path variants from the bypass-403.sh bash script.
+		Each variant is sent as-is, mirroring the specific curl commands in the script.
+		"""
+		results = []
+		requestInfo = self.helpers.analyzeRequest(baseRequestResponse)
+		originalPath = str(baseRequestResponse.getUrl().getPath())
+		originalHeaders = requestInfo.getHeaders()
+		requestBody = baseRequestResponse.getRequest()[requestInfo.getBodyOffset():]
+
+		# path without leading slash for suffix building
+		# e.g. /admin  ->  admin
+		pathStripped = originalPath.lstrip("/")
+
+		# Each tuple: (path_to_test, label)
+		exactVariants = [
+			("/%2e/" + pathStripped,             "/%2e/{path}"),
+			("/" + pathStripped + "/.",          "/{path}/."),
+			("//" + pathStripped + "//",         "//{path}//"),
+			("/./" + pathStripped + "/./",       "/./{path}/./"),
+			("/" + pathStripped + "%20",         "/{path}%20"),
+			("/" + pathStripped + "%09",         "/{path}%09"),
+			("/" + pathStripped + "?",           "/{path}?"),
+			("/" + pathStripped + ".html",       "/{path}.html"),
+			("/" + pathStripped + "/?anything",  "/{path}/?anything"),
+			("/" + pathStripped + "#",           "/{path}#"),
+			("/" + pathStripped + "/*",          "/{path}/*"),
+			("/" + pathStripped + ".php",        "/{path}.php"),
+			("/" + pathStripped + ".json",       "/{path}.json"),
+			("/" + pathStripped + "..;/",        "/{path}..;/"),
+			("/" + pathStripped + ";/",          "/{path};/"),
+		]
+
+		for (pathToTest, label) in exactVariants:
+			try:
+				newHeaders = self.applyUserAgent(originalHeaders)
+				# Update request line with new path
+				parts = list(newHeaders[0].split(" "))
+				parts[1] = pathToTest
+				newHeaders[0] = " ".join(parts)
+
+				headersAsJavaSublist = ArrayList()
+				for header in newHeaders:
+					headersAsJavaSublist.add(String(header))
+
+				newRequest = self.helpers.buildHttpMessage(headersAsJavaSublist, requestBody)
+				newRequestResult = self.callbacks.makeHttpRequest(httpService, newRequest)
+				newRequestStatusCode = str(self.helpers.analyzeResponse(newRequestResult.getResponse()).getStatusCode())
+			except:
+				print("No response from server for exact path variant: " + label)
+				newRequestStatusCode = None
+				continue
+
+			if newRequestStatusCode == "200":
+				originalRequestUrl = str(baseRequestResponse.getUrl())
+				vulnerableUrl = originalRequestUrl.replace(originalPath, pathToTest, 1)
+				responseHeaders = str(self.helpers.analyzeResponse(newRequestResult.getResponse()).getHeaders()).split(",")
+				resultContentLength = "No CL in response"
+				for header in responseHeaders:
+					if "Content-Length: " in header:
+						resultContentLength = header[17:]
+						if resultContentLength[-1] == ']':
+							resultContentLength = resultContentLength.rstrip(']')
+
+				global requestNum
+				issue = []
+				issue.append("<tr><td>" + str(requestNum) + "</td><td>" + vulnerableUrl + " <b>(" + label + ")</b></td> <td>" + newRequestStatusCode + "</td> <td>" + resultContentLength + "</td></tr>")
+				issue.append(newRequestResult)
+				results.append(issue)
+				requestNum += 1
+
+		if len(results) > 0:
+			return results
+		else:
+			return None
+
+	def tryBypassWithTRACE(self, baseRequestResponse, httpService):
+		"""
+		Replaces the HTTP method with TRACE, equivalent to: curl -X TRACE $1/$2
+		"""
+		issue = []
+		requestInfo = self.helpers.analyzeRequest(baseRequestResponse)
+		headers = requestInfo.getHeaders()
+		# Replace method in the first header line (e.g. "GET /path HTTP/1.1" -> "TRACE /path HTTP/1.1")
+		parts = headers[0].split(" ")
+		parts[0] = "TRACE"
+		headers[0] = " ".join(parts)
+
+		# Apply User-Agent
+		headers = self.applyUserAgent(headers)
+
+		headersAsJavaSublist = ArrayList()
+		for header in headers:
+			headersAsJavaSublist.add(String(header))
+
+		requestBody = baseRequestResponse.getRequest()[requestInfo.getBodyOffset():]
+		newRequest = self.helpers.buildHttpMessage(headersAsJavaSublist, requestBody)
+
+		try:
+			newRequestResult = self.callbacks.makeHttpRequest(httpService, newRequest)
+			newRequestStatusCode = str(self.helpers.analyzeResponse(newRequestResult.getResponse()).getStatusCode())
+		except:
+			print("No response from server for TRACE method")
+			return None
+
+		if newRequestStatusCode == "200":
+			responseHeaders = str(self.helpers.analyzeResponse(newRequestResult.getResponse()).getHeaders()).split(",")
+			requestUrl = str(baseRequestResponse.getUrl())
+			resultContentLength = "No CL in response"
+			for header in responseHeaders:
+				if "Content-Length: " in header:
+					resultContentLength = header[17:]
+					if resultContentLength[-1] == ']':
+						resultContentLength = resultContentLength.rstrip(']')
+
+			global requestNum
+			issue.append("<tr><td>" + str(requestNum) + "</td><td>" + requestUrl + "</td> <td>TRACE</td> <td>" + newRequestStatusCode + "</td> <td>" + resultContentLength + "</td></tr>")
+			issue.append(newRequestResult)
+			requestNum += 1
+
+		if len(issue) > 0:
+			return issue
+		else:
+			return None
 
 
 	def doPassiveScan(self, baseRequestResponse):
@@ -448,7 +630,9 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 			queryPayloadsFromTable.append(str(self.frm.queryPayloadsTable.getValueAt(rowIndex, 0)))
 
 		for payload in queryPayloadsFromTable:
-			payload = payload.rstrip('\n')
+			payload = payload.strip()
+			if not payload or payload.startswith('#'):
+				continue
 			result = self.tryBypassWithQueryPayload(baseRequestResponse, payload, httpService)
 			if result != None:
 				queryPayloadsResults += result
@@ -484,7 +668,9 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 			headerPayloadsFromTable.append(str(self.frm.headerPayloadsTable.getValueAt(rowIndex, 0)))
 
 		for payload in headerPayloadsFromTable:
-			payload = payload.rstrip('\n')
+			payload = payload.strip()
+			if not payload or payload.startswith('#'):
+				continue
 			result = self.tryBypassWithHeaderPayload(baseRequestResponse, payload, httpService)
 			if result != None:
 				headerPayloadsResults += result
@@ -554,6 +740,48 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 				issueHttpMessages,
 				"Possible 403 Bypass - Downgraded HTTP Version",
 				"<table><tr><td>Request #</td><td>URL</td><td>Status Code</td><td>Content Length</td></tr>" + "".join(issueDetails) + "</table>",
+				"High",
+				)
+				)
+
+		#test exact path variants from bypass-403.sh (double slashes, %2e, extensions, suffix chars)
+		exactPathResults = self.tryBypassWithExactPaths(baseRequestResponse, httpService)
+		if exactPathResults != None:
+			issueDetails = []
+			issueHttpMessages = []
+			issueHttpMessages.append(baseRequestResponse)
+
+			for issue in exactPathResults:
+				issueDetails.append(issue[0])
+				issueHttpMessages.append(issue[1])
+
+			findings.append(
+				CustomScanIssue(
+				httpService,
+				self.helpers.analyzeRequest(baseRequestResponse).getUrl(),
+				issueHttpMessages,
+				"Possible 403 Bypass - Path Variant",
+				"<table><tr><td>Request #</td><td>URL (variant)</td><td>Status Code</td><td>Content Length</td></tr>" + "".join(issueDetails) + "</table>",
+				"High",
+				)
+				)
+
+		#test TRACE method bypass (equivalent to: curl -X TRACE $1/$2)
+		traceResult = self.tryBypassWithTRACE(baseRequestResponse, httpService)
+		if traceResult != None:
+			issueDetails = []
+			issueHttpMessages = []
+			issueHttpMessages.append(baseRequestResponse)
+			issueDetails.append(traceResult[0])
+			issueHttpMessages.append(traceResult[1])
+
+			findings.append(
+				CustomScanIssue(
+				httpService,
+				self.helpers.analyzeRequest(baseRequestResponse).getUrl(),
+				issueHttpMessages,
+				"Possible 403 Bypass - TRACE Method",
+				"<table><tr><td>Request #</td><td>URL</td><td>Method</td><td>Status Code</td><td>Content Length</td></tr>" + "".join(issueDetails) + "</table>",
 				"High",
 				)
 				)

