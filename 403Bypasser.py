@@ -9,6 +9,7 @@ from java.lang import Short
 
 import thread
 import random
+import re
 
 queryPayloadsFile = open('query payloads.txt', "r")
 queryPayloadsFromFile = queryPayloadsFile.readlines()
@@ -266,7 +267,33 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, Gecko) Chrome/119.0.0.0 Safari/537.36",
 			"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0"
 		]
-		ua = random.choice(user_agents)
+		base_ua = random.choice(user_agents)
+		
+		def randomize_version(match):
+			version_str = match.group(0)
+			parts = version_str.split('.')
+			new_parts = []
+			for part in parts:
+				if part.isdigit():
+					val = int(part)
+					if val == 0:
+						new_parts.append(str(random.randint(0, 9)))
+					elif val < 10:
+						new_parts.append(str(random.randint(1, 15)))
+					elif val < 100:
+						new_parts.append(str(random.randint(10, 99)))
+					elif val < 1000:
+						new_parts.append(str(random.randint(400, 699)))
+					else:
+						new_parts.append(str(random.randint(1000, 9999)))
+				else:
+					new_parts.append(part)
+			
+			if random.random() < 0.1 and len(new_parts) == 2 and new_parts[0] == "10":
+				return "1010"
+			return '.'.join(new_parts)
+
+		ua = re.sub(r'(?<!Mozilla/)\b\d+(?:\.\d+)+\b', randomize_version, base_ua)
 		new_headers = list(headers)
 		
 		# Burp headers list: first element is the request line
@@ -801,7 +828,8 @@ class BurpExtender(IBurpExtender, IScannerCheck, IContextMenuFactory, ITab):
 class CustomScanIssue (IScanIssue):
 	def __init__(self, httpService, url, httpMessages, name, detail, severity):
 		self._httpService = httpService
-		self._url = url
+		from java.net import URL
+		self._url = URL(url.getProtocol(), url.getHost(), url.getPort(), url.getPath())
 		self._httpMessages = httpMessages
 		self._name = name
 		self._detail = detail
